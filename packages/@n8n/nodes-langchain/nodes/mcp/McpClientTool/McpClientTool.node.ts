@@ -1,4 +1,7 @@
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
+import { logWrapper, getConnectionHintNoticeField } from '@n8n/ai-utilities';
+import type { JSONSchema7 } from 'json-schema';
+import pick from 'lodash/pick';
 import { StructuredToolkit } from 'n8n-core';
 import {
 	type IDataObject,
@@ -12,8 +15,6 @@ import {
 	type SupplyData,
 } from 'n8n-workflow';
 
-import { logWrapper, getConnectionHintNoticeField } from '@n8n/ai-utilities';
-
 import { getTools } from './loadOptions';
 import type { McpToolIncludeMode } from './types';
 import { createCallTool, getSelectedTools, mcpToolToDynamicTool } from './utils';
@@ -26,8 +27,6 @@ import {
 	mapToNodeOperationError,
 	tryRefreshOAuth2Token,
 } from '../shared/utils';
-import type { JSONSchema7 } from 'json-schema';
-import pick from 'lodash/pick';
 
 /**
  * Get node parameters for MCP client configuration
@@ -100,15 +99,23 @@ async function connectAndGetTools(
 		return { client, mcpTools: null, error: client.error };
 	}
 
-	const allTools = await getAllTools(client.result);
-	const mcpTools = getSelectedTools({
-		tools: allTools,
-		mode: config.mode,
-		includeTools: config.includeTools,
-		excludeTools: config.excludeTools,
-	});
+	try {
+		const allTools = await getAllTools(client.result);
+		const mcpTools = getSelectedTools({
+			tools: allTools,
+			mode: config.mode,
+			includeTools: config.includeTools,
+			excludeTools: config.excludeTools,
+		});
 
-	return { client: client.result, mcpTools, error: null };
+		return { client: client.result, mcpTools, error: null };
+	} catch (error) {
+		ctx.logger.error('McpClientTool: Failed to fetch tools after connection', {
+			error,
+		});
+		await client.result.close();
+		throw error;
+	}
 }
 
 export class McpClientTool implements INodeType {
@@ -363,36 +370,46 @@ export class McpClientTool implements INodeType {
 		}
 
 		this.logger.debug('McpClientTool: Successfully connected to MCP Server');
-
-		if (!mcpTools?.length) {
-			return setError(
-				new NodeOperationError(node, 'MCP Server returned no tools', {
-					itemIndex,
-					description:
-						'Connected successfully to your MCP server but it returned an empty list of tools.',
-				}),
-			);
-		}
-
-		const tools = mcpTools.map((tool) =>
-			logWrapper(
-				mcpToolToDynamicTool(
-					tool,
-					createCallTool(tool.name, client, config.timeout, (errorMessage) => {
-						const error = new NodeOperationError(node, errorMessage, { itemIndex });
-						void this.addOutputData(NodeConnectionTypes.AiTool, itemIndex, error);
-						this.logger.error(`McpClientTool: Tool "${tool.name}" failed to execute`, { error });
+		try {
+			if (!mcpTools?.length) {
+				return setError(
+					new NodeOperationError(node, 'MCP Server returned no tools', {
+						itemIndex,
+						description:
+							'Connected successfully to your MCP server but it returned an empty list of tools.',
 					}),
+				);
+			}
+
+			const tools = mcpTools.map((tool) =>
+				logWrapper(
+					mcpToolToDynamicTool(
+						tool,
+						createCallTool(tool.name, client, config.timeout, (errorMessage) => {
+							const error = new NodeOperationError(node, errorMessage, { itemIndex });
+							void this.addOutputData(NodeConnectionTypes.AiTool, itemIndex, error);
+							this.logger.error(`McpClientTool: Tool "${tool.name}" failed to execute`, { error });
+						}),
+					),
+					this,
 				),
-				this,
-			),
-		);
+			);
 
-		this.logger.debug(`McpClientTool: Connected to MCP Server with ${tools.length} tools`);
+			this.logger.debug(`McpClientTool: Connected to MCP Server with ${tools.length} tools`);
 
-		const toolkit = new StructuredToolkit(tools);
+			const toolkit = new StructuredToolkit(tools);
 
-		return { response: toolkit, closeFunction: async () => await client.close() };
+			return {
+				response: toolkit,
+				closeFunction: async () => {
+					await client.close();
+				},
+			};
+		} catch (e) {
+			console.error('error');
+			await client.close();
+			throw e;
+		}
 	}
 
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
@@ -410,13 +427,11 @@ export class McpClientTool implements INodeType {
 				throw new NodeOperationError(node, error.error, { itemIndex });
 			}
 
-			if (!mcpTools?.length) {
-				throw new NodeOperationError(node, 'MCP Server returned no tools', { itemIndex });
-			}
+			try {
+				if (!mcpTools?.length) {
+					throw new NodeOperationError(node, 'MCP Server returned no tools', { itemIndex });
+				}
 
-			for (const tool of mcpTools) {
-				// Check for tool name in item.json.tool (for toolkit execution from agent)
-				// or item.tool (for direct execution)
 				if (!item.json.tool || typeof item.json.tool !== 'string') {
 					throw new NodeOperationError(node, 'Tool name not found in item.json.tool or item.tool', {
 						itemIndex,
@@ -424,7 +439,8 @@ export class McpClientTool implements INodeType {
 				}
 
 				const toolName = item.json.tool;
-				if (toolName === tool.name) {
+				const tool = mcpTools.find((t) => t.name === toolName);
+				if (tool) {
 					// Extract the tool name from arguments before passing to MCP
 					const { tool: _, ...toolArguments } = item.json;
 					const schema: JSONSchema7 = tool.inputSchema;
@@ -454,6 +470,8 @@ export class McpClientTool implements INodeType {
 						},
 					});
 				}
+			} finally {
+				await client.close();
 			}
 		}
 

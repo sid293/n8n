@@ -218,4 +218,32 @@ describe('McpClient', () => {
 			[{ json: { error: { message: 'Tool call failed' } }, pairedItem: { item: 0 } }],
 		]);
 	});
+
+	describe('Resource Cleanup', () => {
+		it('should close the client on success', async () => {
+			executeFunctions.getNodeParameter.mockImplementation(
+				(key, _idx, defaultValue) =>
+					defaultParams[key as keyof typeof defaultParams] ?? defaultValue,
+			);
+			client.callTool.mockResolvedValue({
+				content: [{ type: 'text', text: 'Success' }],
+			});
+
+			await new McpClient().execute.call(executeFunctions);
+
+			expect(client.close).toHaveBeenCalledTimes(1);
+		});
+
+		it('should close the client on failure', async () => {
+			executeFunctions.getNodeParameter.mockImplementation(
+				(key, _idx, defaultValue) =>
+					defaultParams[key as keyof typeof defaultParams] ?? defaultValue,
+			);
+			client.callTool.mockRejectedValue(new Error('Failure'));
+
+			await expect(new McpClient().execute.call(executeFunctions)).rejects.toThrow('Failure');
+
+			expect(client.close).toHaveBeenCalledTimes(1);
+		});
+	});
 });

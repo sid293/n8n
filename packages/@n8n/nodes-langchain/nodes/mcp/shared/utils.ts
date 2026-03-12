@@ -127,6 +127,7 @@ export async function connectMcpClient({
 			await client.connect(transport);
 			return createResultOk(client);
 		} catch (error) {
+			await client.close();
 			if (onUnauthorized && isUnauthorizedError(error)) {
 				const newHeaders = await onUnauthorized(headers);
 				if (newHeaders) {
@@ -167,6 +168,7 @@ export async function connectMcpClient({
 		await client.connect(sseTransport);
 		return createResultOk(client);
 	} catch (error) {
+		await client.close();
 		if (onUnauthorized && isUnauthorizedError(error)) {
 			const newHeaders = await onUnauthorized(headers);
 			if (newHeaders) {

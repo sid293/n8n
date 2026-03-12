@@ -1047,13 +1047,13 @@ export class WorkflowExecute {
 			);
 		}
 
-		if (isEngineRequest(data)) {
-			return data;
-		}
-
 		const closeFunctionsResults = await Promise.allSettled(
 			closeFunctions.map(async (fn) => await fn()),
 		);
+
+		if (isEngineRequest(data)) {
+			return data;
+		}
 
 		const closingErrors = closeFunctionsResults
 			.filter((result): result is PromiseRejectedResult => result.status === 'rejected')

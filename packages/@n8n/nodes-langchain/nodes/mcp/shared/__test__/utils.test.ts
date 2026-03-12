@@ -166,6 +166,7 @@ describe('utils', () => {
 	describe('connectMcpClient', () => {
 		const mockClient = {
 			connect: jest.fn(),
+			close: jest.fn(),
 		};
 
 		beforeEach(() => {
@@ -313,6 +314,25 @@ describe('utils', () => {
 				expect(onUnauthorized).toHaveBeenCalledTimes(1);
 				expect(onUnauthorized).toHaveBeenCalledWith({ Authorization: 'Bearer old-token' });
 			});
+		});
+
+		describe('Internal Resource Cleanup', () => {
+			it.each(['httpStreamable', 'sse'] as McpServerTransport[])(
+				'should close the client if connect fails for %s',
+				async (transport) => {
+					const error = new Error('Handshake failed');
+					mockClient.connect.mockRejectedValueOnce(error);
+
+					await connectMcpClient({
+						serverTransport: transport,
+						endpointUrl: 'https://example.com',
+						name: 'test-client',
+						version: 1,
+					});
+
+					expect(mockClient.close).toHaveBeenCalled();
+				},
+			);
 		});
 	});
 });
